@@ -230,10 +230,11 @@ class CostmapEvaluator:
         points: np.ndarray,
         dynamic_tracks: Optional[List[Any]] = None,
         margin: float = 0.25,
+        ground_z_estimate: Optional[float] = None,
     ) -> np.ndarray:
         """Excludes points falling inside bounding boxes of active dynamic tracks."""
         from backend.mapping.cell_statistics import filter_dynamic_points as _fdp
-        return _fdp(points, dynamic_tracks=dynamic_tracks, margin=margin)
+        return _fdp(points, dynamic_tracks=dynamic_tracks, margin=margin, ground_z_estimate=ground_z_estimate)
 
     def apply_obstacle_occupancy(
         self,
