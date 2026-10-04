@@ -429,6 +429,62 @@ def test_dynamic_point_isolation_in_cell_stats_and_costmap():
     assert all(leaf.cost < 255 for leaf in leaves)
 
 
+def test_dynamic_point_exclusion_preserves_ground_mesh_under_tracks():
+    """
+    Regression test: ensures dynamic point exclusion does NOT strip ground points
+    underneath tracked dynamic objects, preventing black rectangular voids in the 2.5D mesh.
+    """
+    from backend.mapping.cell_statistics import filter_dynamic_points
+    from backend.tracking.object_detector import exclude_dynamic_points_from_elevation
+    from backend.mapping.quadtree import AdaptiveQuadtree
+
+    # Synthesize forward corridor ground points: X in [5, 15], Y in [-2, 2], Z = -1.60
+    gx, gy = np.meshgrid(np.linspace(5.0, 15.0, 30), np.linspace(-2.0, 2.0, 20))
+    gz = np.full_like(gx, -1.60)
+    ground_pts = np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()]).astype(np.float32)
+
+    # Dynamic car points at X in [8, 12], Y in [-1, 1], Z in [-0.8, 0.4]
+    cx, cy = np.meshgrid(np.linspace(8.0, 12.0, 10), np.linspace(-1.0, 1.0, 6))
+    cz = np.full_like(cx, -0.40)
+    car_pts = np.column_stack([cx.ravel(), cy.ravel(), cz.ravel()]).astype(np.float32)
+
+    all_pts = np.vstack([ground_pts, car_pts])
+
+    # Dynamic track with bounding box extending down towards ground
+    kf = SingleObjectKalmanFilter(init_x=10.0, init_y=0.0, init_vx=5.0, init_vy=0.0)
+    car_track = TrackedObject(
+        track_id=42,
+        kf=kf,
+        hits=10,
+        dimensions=(4.5, 2.0, 1.6),
+        bbox=(7.5, 12.5, -1.2, 1.2, -1.70, 0.50),  # min_z extends to -1.70m!
+        label="vehicle",
+    )
+    assert car_track.is_dynamic
+    assert car_track.is_confirmed
+
+    # 1. Verify filter_dynamic_points retains all ground points
+    filtered = filter_dynamic_points(all_pts, [car_track])
+    ground_retained = np.sum(filtered[:, 2] < -1.45)
+    assert ground_retained == len(ground_pts), f"Expected {len(ground_pts)} ground points, got {ground_retained}"
+
+    # 2. Verify exclude_dynamic_points_from_elevation retains ground points
+    elev_pts = exclude_dynamic_points_from_elevation(all_pts, [car_track])
+    elev_ground_retained = np.sum(elev_pts[:, 2] < -1.45)
+    assert elev_ground_retained == len(ground_pts)
+
+    # 3. Verify quadtree builds continuous safe road across vehicle footprint
+    qt = AdaptiveQuadtree()
+    leaves = qt.build(elev_pts)
+
+    # Inspect cells within vehicle footprint X in [8, 12], Y in [-1, 1]
+    under_car_leaves = [l for l in leaves if 8.0 <= l.x <= 12.0 and -1.0 <= l.y <= 1.0]
+    assert len(under_car_leaves) >= 8, f"Expected continuous road tiles under vehicle, got only {len(under_car_leaves)}"
+    # All cells directly beneath vehicle must evaluate to safe road (Cost = 0) with zero ghost walls
+    assert all(l.cost == 0 for l in under_car_leaves), "Tiles beneath vehicle must have Cost = 0 without ghost walls"
+    assert all(not l.is_obstacle for l in under_car_leaves), "Under-vehicle ground must not be flagged as obstacle"
+
+
 def test_budget_protected_raycast_ghost_clearing():
     """
     Verifies that ghost clearing executes within budget (< 2.5 ms)

@@ -42,10 +42,13 @@ def filter_dynamic_points(
     points: np.ndarray,
     dynamic_tracks: Optional[List[Any]] = None,
     margin: float = 0.25,
+    ground_z_estimate: Optional[float] = None,
 ) -> np.ndarray:
     """
     Filters out points falling inside bounding boxes or footprints of confirmed dynamic tracks.
     Prevents vehicle roofs and pedestrian heads from contaminating terrain height (z_min, z_max, delta_z).
+    Ensures dynamic exclusion ONLY filters points elevated above the ground (z > ground_z_estimate + 0.15)
+    so that drivable road points beneath or near tracked objects are preserved.
     """
     if dynamic_tracks is None or len(dynamic_tracks) == 0 or len(points) == 0:
         return points
@@ -54,6 +57,15 @@ def filter_dynamic_points(
     px = points[:, 0]
     py = points[:, 1]
     pz = points[:, 2]
+
+    if ground_z_estimate is None:
+        z_cand = pz[(pz >= -2.2) & (pz <= -1.35)]
+        if len(z_cand) >= 3:
+            ground_z_estimate = float(np.median(z_cand))
+        else:
+            ground_z_estimate = -1.60
+
+    elevated_cutoff = ground_z_estimate + 0.15
 
     for t in dynamic_tracks:
         if hasattr(t, "bbox") and t.bbox is not None and len(t.bbox) >= 6:
@@ -72,7 +84,8 @@ def filter_dynamic_points(
             (py >= min_y - margin) & (py <= max_y + margin) &
             (pz >= min_z - margin) & (pz <= max_z + margin)
         )
-        mask &= ~in_box
+        is_dynamic = in_box & (pz > elevated_cutoff)
+        mask &= ~is_dynamic
 
     return points[mask]
 

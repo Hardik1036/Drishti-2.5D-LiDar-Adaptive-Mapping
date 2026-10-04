@@ -199,12 +199,16 @@ class ObjectDetector3D:
 
 
 def exclude_dynamic_points_from_elevation(
-    points: np.ndarray, confirmed_dynamic_tracks: List[Any], margin: float = 0.20
+    points: np.ndarray,
+    confirmed_dynamic_tracks: List[Any],
+    margin: float = 0.20,
+    ground_z_estimate: Optional[float] = None,
 ) -> np.ndarray:
     """
     Excludes points falling inside confirmed dynamic 3D track boxes BEFORE
     elevation statistics (Z_min, Z_max, delta_Z, sigma^2) are computed.
-    Prevents moving vehicles from generating ghost walls or false terrain steps.
+    Prevents moving vehicles from generating ghost walls or false terrain steps,
+    while preserving drivable ground returns beneath and around the vehicle chassis.
     """
     if points is None or len(points) == 0 or not confirmed_dynamic_tracks:
         return points
@@ -215,6 +219,14 @@ def exclude_dynamic_points_from_elevation(
     z = pts[:, 2]
     n_pts = len(pts)
 
+    if ground_z_estimate is None:
+        z_cand = z[(z >= -2.2) & (z <= -1.35)]
+        if len(z_cand) >= 3:
+            ground_z_estimate = float(np.median(z_cand))
+        else:
+            ground_z_estimate = -1.60
+
+    elevated_cutoff = ground_z_estimate + 0.15
     dynamic_mask = np.zeros(n_pts, dtype=bool)
 
     for track in confirmed_dynamic_tracks:
@@ -237,12 +249,13 @@ def exclude_dynamic_points_from_elevation(
             min_y, max_y = ty - w * 0.5, ty + w * 0.5
             min_z, max_z = tz - h * 0.5, tz + h * 0.5
 
-        # Check points in box with margin
+        # Check points in box with margin, elevated above ground
         in_box = (
             (x >= min_x - margin) & (x <= max_x + margin) &
             (y >= min_y - margin) & (y <= max_y + margin) &
             (z >= min_z - margin) & (z <= max_z + margin)
         )
-        dynamic_mask |= in_box
+        is_dynamic = in_box & (z > elevated_cutoff)
+        dynamic_mask |= is_dynamic
 
     return pts[~dynamic_mask]
